@@ -15,6 +15,7 @@ export default function SystemPage() {
   const [devices, setDevices] = useState([]);
   const [zones, setZones] = useState([]);
   const [apiKeys, setApiKeys] = useState([]);
+  const [newlyCreatedApiKey, setNewlyCreatedApiKey] = useState(null); // Store newly created API key
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
   const [success, setSuccess] = useState(null);
@@ -87,7 +88,17 @@ export default function SystemPage() {
       console.log('Loading API keys...');
       const apiKeys = await DeviceService.fetchApiKeys();
       console.log('API keys loaded:', apiKeys);
-      setApiKeys(apiKeys);
+      
+      // Transform the API keys to include display information
+      const transformedApiKeys = apiKeys.map(apiKey => ({
+        ...apiKey,
+        // Show a readable display key since we can't decrypt the hash
+        display_key: `API_KEY_${apiKey.id.substring(0, 8).toUpperCase()}`,
+        // For ESP32 code, we need to show that they should use the actual key from creation
+        actual_key_note: 'Use the key provided when creating this API key'
+      }));
+      
+      setApiKeys(transformedApiKeys);
     } catch (err) {
       console.error('Error loading API keys:', err);
       throw err;
@@ -115,14 +126,27 @@ export default function SystemPage() {
       
       // Generate API key for the device
       const apiKeyName = `${newDevice.name} API Key`;
-      await DeviceService.generateApiKey(createdDevice.id, apiKeyName);
+      const apiKeyResult = await DeviceService.generateApiKey(createdDevice.id, apiKeyName);
+      
+      // Handle the API key result
+      if (apiKeyResult.key) {
+        // New API key was created
+        setNewlyCreatedApiKey({
+          name: apiKeyName,
+          key: apiKeyResult.key,
+          deviceName: newDevice.name,
+          createdAt: new Date().toISOString()
+        });
+        showSuccessMessage('Device added successfully! Check the API Keys section below for your device configuration.');
+      } else if (apiKeyResult.message) {
+        // Device already has an API key
+        showSuccessMessage(`Device added successfully! ${apiKeyResult.message}`);
+      }
       
       setShowAddDevice(false);
       setNewDevice({ name: '', firmware_version: 'v1.0.0', mac_address: '', zone_id: '' });
       await loadAllData();
       
-      // Show success message
-      showSuccessMessage('Device added successfully! Check the API Keys section below for your device configuration.');
     } catch (err) {
       console.error('Error adding device:', err);
       setError('Failed to add device: ' + (err.message || 'Unknown error'));
@@ -297,6 +321,12 @@ export default function SystemPage() {
       setLoading(true);
       setError(null);
       
+      // Since we're testing a display key, show appropriate message
+      if (apiKey.startsWith('API_KEY_')) {
+        showSuccessMessage('This is a display key. To test the actual API key, use it in your ESP32 code and check the dashboard for incoming data.');
+        return;
+      }
+      
       const result = await DeviceService.testApiKey(apiKey);
       
       if (result.valid) {
@@ -420,6 +450,35 @@ export default function SystemPage() {
     }
   };
 
+  const handleCleanupDuplicateApiKeys = async () => {
+    try {
+      setLoading(true);
+      setError(null);
+      
+      console.log('Cleaning up duplicate API keys...');
+      
+      // Clean up duplicates for all devices
+      const cleanupPromises = devices.map(device => 
+        DeviceService.cleanupDuplicateApiKeys(device.id)
+      );
+      
+      const results = await Promise.all(cleanupPromises);
+      const totalDeleted = results.reduce((sum, result) => sum + (result.deletedCount || 0), 0);
+      
+      if (totalDeleted > 0) {
+        showSuccessMessage(`Cleaned up ${totalDeleted} duplicate API keys successfully!`);
+        await loadAllData(); // Reload to show updated list
+      } else {
+        showSuccessMessage('No duplicate API keys found. System is clean!');
+      }
+    } catch (err) {
+      console.error('Error cleaning up duplicate API keys:', err);
+      setError('Failed to cleanup duplicate API keys: ' + (err.message || 'Unknown error'));
+    } finally {
+      setLoading(false);
+    }
+  };
+
   return (
     <>
       <Helmet>
@@ -458,6 +517,65 @@ export default function SystemPage() {
             >
               Dismiss
             </button>
+          </div>
+        )}
+
+        {/* Newly Created API Key Display */}
+        {newlyCreatedApiKey && (
+          <div className="bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded-lg p-6">
+            <div className="flex items-center justify-between mb-4">
+              <div className="flex items-center">
+                <FiActivity className="h-6 w-6 text-blue-500 mr-3" />
+                <div>
+                  <h3 className="text-lg font-semibold text-blue-900 dark:text-blue-100">
+                    🎉 New API Key Created Successfully!
+                  </h3>
+                  <p className="text-sm text-blue-700 dark:text-blue-300">
+                    Device: {newlyCreatedApiKey.deviceName} | Created: {new Date(newlyCreatedApiKey.createdAt).toLocaleString()}
+                  </p>
+                </div>
+              </div>
+              <button
+                onClick={() => setNewlyCreatedApiKey(null)}
+                className="text-blue-600 dark:text-blue-400 hover:text-blue-800 dark:hover:text-blue-200"
+              >
+                <FiCheck className="h-5 w-5" />
+              </button>
+            </div>
+            
+            <div className="bg-white dark:bg-gray-800 rounded-lg p-4 border border-blue-200 dark:border-blue-700">
+              <label className="block text-sm font-medium text-blue-900 dark:text-blue-100 mb-2">
+                🔑 Your New API Key (Copy this now - you won't see it again!)
+              </label>
+              <div className="flex items-center gap-2">
+                <input
+                  type="text"
+                  value={newlyCreatedApiKey.key}
+                  readOnly
+                  className="flex-1 px-3 py-2 border border-blue-300 dark:border-blue-600 rounded-md bg-blue-50 dark:bg-gray-700 text-blue-900 dark:text-white text-sm font-mono"
+                />
+                <button
+                  onClick={() => copyToClipboard(newlyCreatedApiKey.key)}
+                  className="px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 transition text-sm"
+                >
+                  Copy Key
+                </button>
+              </div>
+              
+              <div className="mt-4 p-3 bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-700 rounded-lg">
+                <p className="text-sm text-amber-800 dark:text-amber-200">
+                  <strong>⚠️ Important:</strong> This is the only time you'll see the actual API key. 
+                  Copy it now and store it securely. You'll need this exact key for your ESP32 code.
+                </p>
+              </div>
+              
+              <div className="mt-4 p-3 bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-700 rounded-lg">
+                <p className="text-sm text-green-800 dark:text-green-200">
+                  <strong>📱 ESP32 Usage:</strong> Use this key in your ESP32 code as the <code>apiKey</code> parameter 
+                  when sending sensor data to the dashboard.
+                </p>
+              </div>
+            </div>
           </div>
         )}
         
@@ -501,6 +619,12 @@ export default function SystemPage() {
                 className="px-2 py-1 bg-purple-500 text-white rounded text-xs"
               >
                 Refresh Schema
+              </button>
+              <button 
+                onClick={handleCleanupDuplicateApiKeys} 
+                className="px-2 py-1 bg-red-500 text-white rounded text-xs"
+              >
+                Cleanup Duplicates
               </button>
               <button 
                 onClick={() => setShowAddDevice(true)} 
@@ -641,6 +765,11 @@ export default function SystemPage() {
             <div>
               <h2 className="text-lg font-semibold mb-1">Device Configuration</h2>
               <p className="text-sm text-gray-500 dark:text-gray-400">API keys and configuration data for your ESP32 devices</p>
+              {apiKeys.length > 0 && (
+                <p className="text-xs text-blue-600 dark:text-blue-400 mt-1">
+                  Showing {apiKeys.length} unique API key{apiKeys.length !== 1 ? 's' : ''} (duplicates automatically filtered)
+                </p>
+              )}
             </div>
             <button
               onClick={loadApiKeys}
@@ -696,10 +825,10 @@ export default function SystemPage() {
                         <div className="flex-1 relative">
                           <input
                             type={hiddenApiKeys.has(apiKey.id) ? "password" : "text"}
-                            value={apiKey.key}
+                            value={apiKey.display_key}
                             readOnly
                             className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md bg-gray-50 dark:bg-gray-700 text-gray-900 dark:text-white text-sm font-mono pr-10 focus:outline-none focus:ring-2 focus:ring-green-500 focus:border-green-500"
-                            aria-label="API key value"
+                            aria-label="API key display value"
                           />
                           <button
                             onClick={() => toggleApiKeyVisibility(apiKey.id)}
@@ -712,7 +841,7 @@ export default function SystemPage() {
                         </div>
                         <div className="flex gap-2">
                           <button
-                            onClick={() => copyToClipboard(apiKey.key)}
+                            onClick={() => copyToClipboard(apiKey.display_key)}
                             disabled={loading}
                             className="px-3 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 transition text-sm disabled:opacity-50 flex items-center justify-center min-w-[60px]"
                             aria-label="Copy API key to clipboard"
@@ -720,15 +849,19 @@ export default function SystemPage() {
                             Copy
                           </button>
                           <button
-                            onClick={() => handleTestApiKey(apiKey.key)}
+                            onClick={() => handleTestApiKey(apiKey.display_key)}
                             disabled={loading}
                             className="px-3 py-2 bg-green-600 text-white rounded-md hover:bg-green-700 transition text-sm disabled:opacity-50 flex items-center justify-center min-w-[60px]"
                             aria-label="Test API key"
+                            title="Test API key functionality"
                           >
                             Test
                           </button>
                         </div>
                       </div>
+                      <p className="text-xs text-amber-600 dark:text-amber-400 mt-1">
+                        ⚠️ This is a display key. Use the actual API key provided when creating this key for ESP32 integration.
+                      </p>
                     </div>
                     
                     <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
@@ -755,13 +888,22 @@ export default function SystemPage() {
                           ESP32 Code Template
                         </label>
                         <div className="bg-gray-50 dark:bg-gray-900 rounded-md p-3 text-sm font-mono overflow-x-auto">
-                          <div className="text-gray-500 dark:text-gray-400">// Include your API key</div>
-                          <div className="text-green-600 dark:text-green-400">const char* apiKey = "{apiKey.key}";</div>
+                          <div className="text-gray-500 dark:text-gray-400">// Include your actual API key (not the display key)</div>
+                          <div className="text-green-600 dark:text-green-400">const char* apiKey = "your-actual-api-key-here";</div>
                           <div className="text-gray-500 dark:text-gray-400">// Use in HTTP headers</div>
                           <div className="text-blue-600 dark:text-blue-400">headers["apikey"] = apiKey;</div>
+                          <div className="text-gray-500 dark:text-gray-400 mt-2">// Data format for sensor readings:</div>
+                          <div className="text-purple-600 dark:text-purple-400">{"{"}</div>
+                          <div className="text-purple-600 dark:text-purple-400">  "device_id": "your-device-uuid",</div>
+                          <div className="text-purple-600 dark:text-purple-400">  "zone_id": "your-zone-uuid",</div>
+                          <div className="text-purple-600 dark:text-purple-400">  "sensor_type": "moisture",</div>
+                          <div className="text-purple-600 dark:text-purple-400">  "value": 45.2,</div>
+                          <div className="text-purple-600 dark:text-purple-400">  "unit": "%",</div>
+                          <div className="text-purple-600 dark:text-purple-400">  "apiKey": "your-actual-api-key"</div>
+                          <div className="text-purple-600 dark:text-purple-400">{"}"}</div>
                         </div>
                         <button
-                          onClick={() => copyToClipboard(`// Include your API key\nconst char* apiKey = "${apiKey.key}";\n// Use in HTTP headers\nheaders["apikey"] = apiKey;`)}
+                          onClick={() => copyToClipboard(`// Include your actual API key (not the display key)\nconst char* apiKey = "your-actual-api-key-here";\n// Use in HTTP headers\nheaders["apikey"] = apiKey;\n\n// Data format for sensor readings:\n{\n  "device_id": "your-device-uuid",\n  "zone_id": "your-zone-uuid",\n  "sensor_type": "moisture",\n  "value": 45.2,\n  "unit": "%",\n  "apiKey": "your-actual-api-key"\n}`)}
                           className="mt-2 px-2 py-1 bg-gray-600 text-white rounded text-xs hover:bg-gray-700 transition"
                           aria-label="Copy ESP32 code template"
                         >

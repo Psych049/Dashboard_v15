@@ -32,7 +32,7 @@ export default function ApiKeyDebugger() {
       try {
         const { data, error } = await client
           .from('api_keys')
-          .select('id, name, key, created_at')
+          .select('id, name, key_hash, device_id, created_at')
           .limit(1);
         
         results.schemaValid = !error;
@@ -44,14 +44,26 @@ export default function ApiKeyDebugger() {
 
       // Test 3: Check RPC function
       try {
-        const { data, error } = await client.rpc('create_api_key', {
-          key_name: 'debug_test',
-          key_value: 'sk_debug_' + Date.now()
-        });
+        // First get a device ID to test with
+        const { data: devices, error: deviceError } = await client
+          .from('devices')
+          .select('id')
+          .limit(1);
         
-        results.rpcWorks = !error;
-        results.rpcError = error?.message || null;
-        results.rpcResult = data;
+        if (deviceError || !devices || devices.length === 0) {
+          results.rpcWorks = false;
+          results.rpcError = 'No devices available for testing';
+        } else {
+          const { data, error } = await client.rpc('create_api_key', {
+            p_device_id: devices[0].id,
+            p_name: 'debug_test_' + Date.now(),
+            p_user_email: null // Will use current user's email
+          });
+          
+          results.rpcWorks = !error;
+          results.rpcError = error?.message || null;
+          results.rpcResult = data;
+        }
       } catch (err) {
         results.rpcWorks = false;
         results.rpcError = err.message;

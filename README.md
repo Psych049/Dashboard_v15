@@ -63,7 +63,15 @@ A modern, responsive IoT garden monitoring dashboard built with React, Supabase,
    ```env
    VITE_SUPABASE_URL=your_supabase_url
    VITE_SUPABASE_ANON_KEY=your_supabase_anon_key
+   
+   # Optional: Weather API for weather data
+   VITE_WEATHER_API_KEY=your_weatherapi_key
    ```
+
+   **Weather API Setup (Optional):**
+   - Get a free API key from [WeatherAPI.com](https://www.weatherapi.com/)
+   - Add `VITE_WEATHER_API_KEY=your_key` to your `.env` file
+   - Weather data will be automatically fetched for your location
 
 5. **Start the development server**
    ```bash
@@ -246,6 +254,4 @@ For support and questions:
 ---
 
 **Built with ❤️ for smart gardening** 
-#   D a s h b o a r d _ v 1 5  
- #   D a s h b o a r d _ v 1 5  
- 
+# 15

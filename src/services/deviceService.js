@@ -421,15 +421,31 @@ export class DeviceService {
         throw new Error('User not authenticated');
       }
 
+      // First, get the user profile ID since the schema references user_profiles
+      const { data: userProfile, error: profileError } = await client
+        .from('user_profiles')
+        .select('id')
+        .eq('id', user.id)
+        .single();
+
+      if (profileError || !userProfile) {
+        console.error('User profile not found:', profileError);
+        throw new Error('User profile not found. Please contact support.');
+      }
+
       const { data, error } = await client
         .from('api_keys')
         .select(`
           id,
           name,
-          key,
-          created_at
+          key_hash,
+          device_id,
+          created_at,
+          is_active,
+          permissions
         `)
-        .eq('user_id', user.id)
+        .eq('user_id', userProfile.id)
+        .eq('is_active', true)
         .order('created_at', { ascending: false });
 
       if (error) {
@@ -437,14 +453,94 @@ export class DeviceService {
         throw error;
       }
       
-      return data || [];
+      // Group API keys by device to prevent duplicates
+      const deviceApiKeys = new Map();
+      
+      data.forEach(apiKey => {
+        if (apiKey.device_id) {
+          // If device already has an API key, keep the most recent one
+          if (!deviceApiKeys.has(apiKey.device_id) || 
+              new Date(apiKey.created_at) > new Date(deviceApiKeys.get(apiKey.device_id).created_at)) {
+            deviceApiKeys.set(apiKey.device_id, apiKey);
+          }
+        } else {
+          // For API keys without device_id, keep them as is
+          deviceApiKeys.set(apiKey.id, apiKey);
+        }
+      });
+      
+      // Convert back to array and add display information
+      const uniqueApiKeys = Array.from(deviceApiKeys.values()).map(apiKey => ({
+        ...apiKey,
+        // Show a readable display key since we can't decrypt the hash
+        display_key: `API_KEY_${apiKey.id.substring(0, 8).toUpperCase()}`,
+        // For ESP32 code, we need to show that they should use the actual key from creation
+        actual_key_note: 'Use the key provided when creating this API key'
+      }));
+      
+      return uniqueApiKeys || [];
     } catch (error) {
       console.error('Error in fetchApiKeys:', error);
       return [];
     }
   }
 
-  // Generate API key for a device (with fallback for schema issues)
+  // Clean up duplicate API keys for a device
+  static async cleanupDuplicateApiKeys(deviceId) {
+    try {
+      const client = this.getFreshClient();
+      const { data: { user }, error: userError } = await client.auth.getUser();
+      if (userError || !user) {
+        throw new Error('User not authenticated');
+      }
+
+      // Get the user profile ID
+      const { data: userProfile, error: profileError } = await client
+        .from('user_profiles')
+        .select('id')
+        .eq('id', user.id)
+        .single();
+
+      if (profileError || !userProfile) {
+        throw new Error('User profile not found. Please contact support.');
+      }
+
+      // Get all API keys for the device
+      const { data: apiKeys, error: fetchError } = await client
+        .from('api_keys')
+        .select('id, created_at')
+        .eq('device_id', deviceId)
+        .eq('user_id', userProfile.id)
+        .eq('is_active', true)
+        .order('created_at', { ascending: false });
+
+      if (fetchError) {
+        throw fetchError;
+      }
+
+      if (apiKeys.length <= 1) {
+        return { message: 'No duplicate API keys found' };
+      }
+
+      // Keep the most recent API key, delete the rest
+      const keysToDelete = apiKeys.slice(1);
+      const deletePromises = keysToDelete.map(key => 
+        client.from('api_keys').delete().eq('id', key.id)
+      );
+
+      await Promise.all(deletePromises);
+
+      return { 
+        message: `Cleaned up ${keysToDelete.length} duplicate API keys`,
+        deletedCount: keysToDelete.length
+      };
+    } catch (error) {
+      console.error('Error cleaning up duplicate API keys:', error);
+      throw error;
+    }
+  }
+
+  // Generate API key for a device (updated for actual schema)
   static async generateApiKey(deviceId, keyName) {
     try {
       const client = this.getFreshClient();
@@ -453,43 +549,61 @@ export class DeviceService {
         throw new Error('User not authenticated');
       }
 
-      // Generate a secure API key (used for schema that accepts plaintext)
-      const keyValue = 'sk_' + Math.random().toString(36).substring(2, 15) + Math.random().toString(36).substring(2, 15);
+      // Get the user profile ID
+      const { data: userProfile, error: profileError } = await client
+        .from('user_profiles')
+        .select('id, email')
+        .eq('id', user.id)
+        .single();
 
-      // Try modern schema: create_api_key(key_name TEXT, key_value TEXT) RETURNS JSONB
-      try {
-        const { data } = await client.rpc('create_api_key', {
-          key_name: keyName,
-          key_value: keyValue
-        });
-
-        // If it returns an object with a key field, prefer that; otherwise fall back to the key we generated
-        const returnedKey = (data && typeof data === 'object' && data.key) ? data.key : keyValue;
-        return { key: returnedKey, name: keyName };
-      } catch (rpcErrFirst) {
-        console.warn('create_api_key(key_name, key_value) failed, trying legacy signature...', rpcErrFirst?.message || rpcErrFirst);
-
-        // Try legacy schema: create_api_key(p_device_id UUID, p_name TEXT [, p_user_email TEXT]) RETURNS TEXT
-        const { data: legacyData, error: legacyError } = await client.rpc('create_api_key', {
-          p_device_id: deviceId,
-          p_name: keyName
-        });
-
-        if (legacyError) {
-          console.error('Error with RPC API key generation (both signatures failed):', legacyError);
-          throw new Error('Failed to generate API key. Please check your database schema.');
-        }
-
-        // Legacy returns the plaintext key as TEXT
-        return { key: legacyData, name: keyName };
+      if (profileError || !userProfile) {
+        throw new Error('User profile not found. Please contact support.');
       }
+
+      // Check if device already has an API key to prevent duplicates
+      const { data: existingKeys, error: checkError } = await client
+        .from('api_keys')
+        .select('id, name')
+        .eq('device_id', deviceId)
+        .eq('user_id', userProfile.id)
+        .eq('is_active', true);
+
+      if (checkError) {
+        console.error('Error checking existing API keys:', checkError);
+      }
+
+      if (existingKeys && existingKeys.length > 0) {
+        console.warn('Device already has API keys:', existingKeys);
+        // Return existing key info instead of creating duplicate
+        return { 
+          key: null, 
+          name: keyName,
+          message: 'Device already has an API key. Use the existing one.',
+          existingKeys: existingKeys
+        };
+      }
+
+      // Use the correct function signature from the schema
+      const { data: apiKey, error: rpcError } = await client.rpc('create_api_key', {
+        p_device_id: deviceId,
+        p_name: keyName,
+        p_user_email: userProfile.email
+      });
+
+      if (rpcError) {
+        console.error('Error creating API key:', rpcError);
+        throw new Error('Failed to generate API key: ' + rpcError.message);
+      }
+
+      // The function returns the plaintext key
+      return { key: apiKey, name: keyName };
     } catch (error) {
       console.error('Error in generateApiKey:', error);
       throw error;
     }
   }
 
-  // Generate API key for existing device
+  // Generate API key for existing device (consolidated method)
   static async generateApiKeyForDevice(deviceId) {
     try {
       const client = this.getFreshClient();
@@ -498,7 +612,7 @@ export class DeviceService {
         throw new Error('User not authenticated');
       }
 
-      // Get device info by UUID (not device_id string)
+      // Get device info by UUID
       const { data: device, error: deviceError } = await client
         .from('devices')
         .select('id, device_name')
@@ -510,32 +624,8 @@ export class DeviceService {
         throw new Error('Device not found or access denied');
       }
 
-      // Check if device already has an API key
-      const { data: existingKeys, error: checkError } = await client
-        .from('api_keys')
-        .select('id')
-        .eq('user_id', user.id)
-        .ilike('name', `%${device.device_name}%`);
-
-      if (checkError) {
-        console.error('Error checking existing API keys:', checkError);
-      }
-
-      if (existingKeys && existingKeys.length > 0) {
-        throw new Error('Device already has an API key');
-      }
-
-      // Generate a secure API key
-      const keyValue = 'sk_' + Math.random().toString(36).substring(2, 15) + Math.random().toString(36).substring(2, 15);
-      
-      const { data: rpcData, error } = await client
-        .rpc('create_api_key', { key_name: `${device.device_name} API Key`, key_value: keyValue });
-
-      if (error) {
-        console.error('Error generating API key via RPC:', error);
-        throw error;
-      }
-      return { key: rpcData, name: `${device.device_name} API Key` };
+      // Use the same method as generateApiKey to prevent duplicates
+      return await this.generateApiKey(deviceId, `${device.device_name} API Key`);
     } catch (error) {
       console.error('Error in generateApiKeyForDevice:', error);
       throw error;
@@ -572,10 +662,10 @@ export class DeviceService {
         throw new Error('User not authenticated');
       }
 
-      // Get device info by UUID (not device_id string)
+      // Get device info by UUID
       const { data: device, error: deviceError } = await client
         .from('devices')
-        .select('id, name, device_id')
+        .select('id, device_name')
         .eq('id', deviceId)
         .eq('user_id', user.id)
         .single();
@@ -584,35 +674,40 @@ export class DeviceService {
         throw new Error('Device not found or access denied');
       }
 
+      // Get the user profile ID
+      const { data: userProfile, error: profileError } = await client
+        .from('user_profiles')
+        .select('id, email')
+        .eq('id', user.id)
+        .single();
+
+      if (profileError || !userProfile) {
+        throw new Error('User profile not found. Please contact support.');
+      }
+
       // Delete existing API keys for this device
       const { error: deleteError } = await client
         .from('api_keys')
         .delete()
-        .eq('user_id', user.id)
-        .ilike('name', `%${device.name}%`);
+        .eq('device_id', deviceId)
+        .eq('user_id', userProfile.id);
 
       if (deleteError) {
         console.error('Error deleting existing API keys:', deleteError);
       }
 
-      // Generate a new API key
-      const apiKey = 'sk_' + Math.random().toString(36).substring(2, 15) + Math.random().toString(36).substring(2, 15);
+      // Generate a new API key using the RPC function
+      const { data: newApiKey, error: createError } = await client.rpc('create_api_key', {
+        p_device_id: deviceId,
+        p_name: `${device.device_name} API Key (Regenerated)`,
+        p_user_email: userProfile.email
+      });
 
-      const { data, error } = await client
-        .from('api_keys')
-        .insert([{
-          name: `${device.device_name} API Key`,
-          key: apiKey,
-          user_id: user.id
-        }])
-        .select();
-
-      if (error) {
-        console.error('Error generating new API key:', error);
-        throw error;
+      if (createError) {
+        throw new Error('Failed to create new API key: ' + createError.message);
       }
       
-      return data?.[0] || null;
+      return { key: newApiKey, name: `${device.device_name} API Key (Regenerated)` };
     } catch (error) {
       console.error('Error in regenerateApiKeyForDevice:', error);
       throw error;
@@ -622,20 +717,36 @@ export class DeviceService {
   // Test API key validity
   static async testApiKey(apiKey) {
     try {
-      const client = this.getFreshClient();
-      const { data, error } = await client
-        .from('devices')
-        .select('id, name')
-        .limit(1)
-        .headers({
-          'apikey': apiKey
-        });
-
-      if (error) {
-        return { valid: false, error: error.message };
-      }
+      // Since we can't decrypt the stored hash, we'll test the API key
+      // by making a request to the edge function
+      const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
+      const edgeFunctionUrl = `${supabaseUrl}/functions/v1/esp32-data`;
       
-      return { valid: true, data };
+      // Create a test payload
+      const testPayload = {
+        device_id: '00000000-0000-0000-0000-000000000000', // Dummy device ID
+        zone_id: '00000000-0000-0000-0000-000000000000',   // Dummy zone ID
+        sensor_type: 'test',
+        value: 0,
+        unit: 'test',
+        apiKey: apiKey
+      };
+
+      const response = await fetch(edgeFunctionUrl, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'apikey': apiKey
+        },
+        body: JSON.stringify(testPayload)
+      });
+
+      if (response.ok) {
+        return { valid: true, message: 'API key is valid and working' };
+      } else {
+        const errorData = await response.json();
+        return { valid: false, error: errorData.error || `HTTP ${response.status}` };
+      }
     } catch (error) {
       return { valid: false, error: error.message };
     }

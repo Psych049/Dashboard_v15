@@ -29,13 +29,13 @@ serve(async (req) => {
       }
     )
 
-    // Get request data
-    let { sensor_id, temperature, humidity, soil_moisture, apiKey } = await req.json()
+    // Get request data - updated to match actual schema
+    let { device_id, zone_id, sensor_type, value, unit, apiKey, battery_level, signal_strength } = await req.json()
     
     // Validate required fields
-    if (!sensor_id || temperature === undefined || humidity === undefined || soil_moisture === undefined || !apiKey) {
+    if (!device_id || !zone_id || !sensor_type || value === undefined || !unit || !apiKey) {
       return new Response(JSON.stringify({ 
-        error: 'Missing required fields: sensor_id, temperature, humidity, soil_moisture, apiKey' 
+        error: 'Missing required fields: device_id, zone_id, sensor_type, value, unit, apiKey' 
       }), {
         headers: { ...corsHeaders, 'Content-Type': 'application/json' },
         status: 400,
@@ -43,52 +43,62 @@ serve(async (req) => {
     }
 
     // Convert data to proper types
-    temperature = parseFloat(temperature)
-    humidity = parseFloat(humidity)
-    soil_moisture = parseFloat(soil_moisture)
+    value = parseFloat(value)
+    battery_level = battery_level ? parseInt(battery_level) : null
+    signal_strength = signal_strength ? parseInt(signal_strength) : null
     
-    // Simple API key validation - you should implement a more secure system
+    // API key validation using the actual schema
     const { data: apiKeyData, error: apiKeyError } = await supabaseClient
       .from('api_keys')
-      .select('user_id')
-      .eq('key', apiKey)
+      .select('user_id, device_id, is_active')
+      .eq('key_hash', apiKey) // This should be the hashed version
+      .eq('is_active', true)
       .single()
 
     if (apiKeyError || !apiKeyData) {
-      return new Response(JSON.stringify({ error: 'Invalid API key' }), {
+      return new Response(JSON.stringify({ error: 'Invalid or inactive API key' }), {
         headers: { ...corsHeaders, 'Content-Type': 'application/json' },
         status: 401,
       })
     }
 
+    // Verify the API key belongs to the device
+    if (apiKeyData.device_id !== device_id) {
+      return new Response(JSON.stringify({ error: 'API key not authorized for this device' }), {
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        status: 403,
+      })
+    }
+
     const user_id = apiKeyData.user_id
 
-    // Get zone_id from sensor_id
+    // Verify the zone belongs to the user
     const { data: zone, error: zoneError } = await supabaseClient
       .from('zones')
-      .select('id')
-      .eq('sensor_id', sensor_id)
+      .select('id, moisture_threshold, auto_watering')
+      .eq('id', zone_id)
       .eq('user_id', user_id)
       .single()
 
     if (zoneError || !zone) {
-      return new Response(JSON.stringify({ error: 'Zone not found for this sensor ID' }), {
+      return new Response(JSON.stringify({ error: 'Zone not found or access denied' }), {
         headers: { ...corsHeaders, 'Content-Type': 'application/json' },
         status: 404,
       })
     }
 
-    const zone_id = zone.id
-
-    // Insert data into sensor_data table
+    // Insert data into sensor_data table using the actual schema
     const { data, error } = await supabaseClient
       .from('sensor_data')
       .insert({
+        device_id,
         zone_id,
-        temperature,
-        humidity,
-        soil_moisture,
-        user_id
+        sensor_type,
+        value,
+        unit,
+        battery_level,
+        signal_strength,
+        reading_timestamp: new Date().toISOString()
       })
       .select()
 
@@ -99,23 +109,54 @@ serve(async (req) => {
       })
     }
 
-    // Get current zone moisture level
-    const { data: zoneData } = await supabaseClient
-      .from('zones')
-      .select('moisture_level')
-      .eq('id', zone_id)
-      .single()
+    // Update real-time cache
+    const { error: cacheError } = await supabaseClient
+      .from('realtime_cache')
+      .upsert({
+        zone_id,
+        device_id,
+        moisture_value: sensor_type === 'moisture' ? value : null,
+        temperature_value: sensor_type === 'temperature' ? value : null,
+        humidity_value: sensor_type === 'humidity' ? value : null,
+        light_value: sensor_type === 'light' ? value : null,
+        last_updated: new Date().toISOString(),
+        data_freshness: 0
+      }, {
+        onConflict: 'zone_id,device_id'
+      })
 
-    // Check if irrigation is needed
+    if (cacheError) {
+      console.warn('Cache update failed:', cacheError)
+    }
+
+    // Update device last_seen
+    const { error: deviceError } = await supabaseClient
+      .from('devices')
+      .update({ 
+        last_seen: new Date().toISOString(),
+        is_online: true,
+        connection_status: 'connected'
+      })
+      .eq('id', device_id)
+
+    if (deviceError) {
+      console.warn('Device update failed:', deviceError)
+    }
+
+    // Check if irrigation is needed based on moisture threshold
     let irrigation_needed = false
-    if (zoneData && soil_moisture < 30) {
+    if (sensor_type === 'moisture' && zone.moisture_threshold && value < zone.moisture_threshold) {
       irrigation_needed = true
     }
 
     return new Response(JSON.stringify({ 
       message: 'Data received successfully',
       irrigation_needed,
-      data 
+      data,
+      zone_info: {
+        moisture_threshold: zone.moisture_threshold,
+        auto_watering: zone.auto_watering
+      }
     }), {
       headers: { ...corsHeaders, 'Content-Type': 'application/json' },
       status: 200,

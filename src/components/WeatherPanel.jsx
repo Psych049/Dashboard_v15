@@ -6,8 +6,7 @@ export default function WeatherPanel() {
   const { theme } = useTheme();
   const isDark = theme === "dark";
 
-  const apiKey =
-    import.meta.env.VITE_WEATHER_API_KEY || "031c15b46712429b8cf162631251707";
+  const apiKey = import.meta.env.VITE_WEATHER_API_KEY;
   const baseUrl = "https://api.weatherapi.com/v1";
 
   const [city, setCity] = useState("");
@@ -15,7 +14,7 @@ export default function WeatherPanel() {
   const [weatherData, setWeatherData] = useState(null);
   const [forecast, setForecast] = useState([]);
   const [location, setLocation] = useState(null);
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
   const [locationLoading, setLocationLoading] = useState(false);
   const [searchLoading, setSearchLoading] = useState(false);
@@ -24,8 +23,24 @@ export default function WeatherPanel() {
   const timeoutRef = useRef(null);
   const abortControllerRef = useRef(null);
 
+  // Check if API key is available
+  useEffect(() => {
+    if (!apiKey) {
+      setError("Weather API key not configured. Please add VITE_WEATHER_API_KEY to your environment variables.");
+      setLoading(false);
+    } else {
+      setError(null);
+      setLoading(false);
+    }
+  }, [apiKey]);
+
   const fetchWeather = useCallback(
     async (query) => {
+      if (!apiKey) {
+        setError("Weather API key not configured. Please add VITE_WEATHER_API_KEY to your environment variables.");
+        return;
+      }
+
       if (abortControllerRef.current) abortControllerRef.current.abort();
       abortControllerRef.current = new AbortController();
 
@@ -55,7 +70,13 @@ export default function WeatherPanel() {
       } catch (err) {
         if (err.name !== "AbortError") {
           console.error("Error fetching weather:", err);
-          setError("Unable to fetch weather data.");
+          if (err.response?.status === 401) {
+            setError("Invalid weather API key. Please check your configuration.");
+          } else if (err.response?.status === 429) {
+            setError("Weather API rate limit exceeded. Please try again later.");
+          } else {
+            setError("Unable to fetch weather data. Please check your internet connection.");
+          }
         }
         setWeatherData(null);
         setForecast([]);
@@ -214,11 +235,12 @@ export default function WeatherPanel() {
             onChange={handleCityInputChange}
             onKeyDown={handleKeyPress}
             placeholder="Search city..."
-            className={`px-3 py-2 border rounded-lg text-sm ${isDark ? 'bg-gray-700 border-gray-600 text-white placeholder-gray-400' : 'bg-white border-gray-300 text-gray-900 placeholder-gray-500'}`}
+            disabled={!apiKey}
+            className={`px-3 py-2 border rounded-lg text-sm ${isDark ? 'bg-gray-700 border-gray-600 text-white placeholder-gray-400' : 'bg-white border-gray-300 text-gray-900 placeholder-gray-500'} ${!apiKey ? 'opacity-50 cursor-not-allowed' : ''}`}
           />
           <button
             onClick={handleCitySearch}
-            disabled={searchLoading}
+            disabled={searchLoading || !apiKey}
             className={`px-3 py-2 rounded-lg text-sm transition-colors disabled:opacity-50 disabled:cursor-not-allowed ${
               isDark 
                 ? 'bg-gray-600 hover:bg-gray-700 text-white' 
@@ -229,7 +251,8 @@ export default function WeatherPanel() {
           </button>
           <button
             onClick={handleLocationClick}
-            className={`px-3 py-2 rounded-lg text-sm transition-colors ${
+            disabled={!apiKey}
+            className={`px-3 py-2 rounded-lg text-sm transition-colors disabled:opacity-50 disabled:cursor-not-allowed ${
               isDark 
                 ? 'bg-gray-700 hover:bg-gray-600 text-white' 
                 : 'bg-green-600 hover:bg-green-700 text-white'
@@ -244,7 +267,23 @@ export default function WeatherPanel() {
       {loading ? (
         <p className={`text-center text-sm ${isDark ? 'text-gray-400' : 'text-gray-600'}`}>Loading...</p>
       ) : error ? (
-        <p className={`text-center text-sm ${isDark ? 'text-red-400' : 'text-red-600'}`}>{error}</p>
+        <div className="text-center">
+          <p className={`text-sm ${isDark ? 'text-red-400' : 'text-red-600'} mb-3`}>{error}</p>
+          {!apiKey && (
+            <div className={`p-4 rounded-lg border ${isDark ? 'bg-gray-700 border-gray-600' : 'bg-gray-50 border-gray-200'}`}>
+              <h3 className={`font-medium mb-2 ${isDark ? 'text-white' : 'text-gray-800'}`}>Setup Weather API</h3>
+              <p className={`text-xs ${isDark ? 'text-gray-400' : 'text-gray-600'} mb-3`}>
+                To enable weather data, you need to add a WeatherAPI.com API key to your environment variables.
+              </p>
+              <div className={`text-xs font-mono p-2 rounded ${isDark ? 'bg-gray-800 text-gray-300' : 'bg-gray-100 text-gray-700'}`}>
+                VITE_WEATHER_API_KEY=your_api_key_here
+              </div>
+              <p className={`text-xs ${isDark ? 'text-gray-400' : 'text-gray-600'} mt-2`}>
+                Get your free API key at: <a href="https://www.weatherapi.com/" target="_blank" rel="noopener noreferrer" className="text-blue-500 hover:underline">weatherapi.com</a>
+              </p>
+            </div>
+          )}
+        </div>
       ) : (
         weatherData && (
           <div className="grid gap-4">
