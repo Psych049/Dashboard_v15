@@ -50,15 +50,16 @@ serve(async (req) => {
         })
       }
 
-      // Validate API key
+      // Validate API key - updated to match esp32-data function
       const { data: apiKeyData, error: apiKeyError } = await supabaseClient
         .from('api_keys')
-        .select('user_id')
-        .eq('key', apiKey)
+        .select('user_id, device_id, is_active')
+        .eq('key_hash', apiKey)
+        .eq('is_active', true)
         .single()
 
       if (apiKeyError || !apiKeyData) {
-        return new Response(JSON.stringify({ error: 'Invalid API key' }), {
+        return new Response(JSON.stringify({ error: 'Invalid or inactive API key' }), {
           headers: { ...corsHeaders, 'Content-Type': 'application/json' },
           status: 401,
         })
@@ -82,7 +83,9 @@ serve(async (req) => {
             last_seen: new Date().toISOString(),
             ip_address,
             mac_address,
-            firmware_version
+            firmware_version,
+            is_online: true,
+            connection_status: 'connected'
           })
           .eq('id', existingDevice.id)
           .select()
@@ -114,7 +117,9 @@ serve(async (req) => {
             ip_address,
             mac_address,
             firmware_version,
-            user_id: apiKeyData.user_id
+            user_id: apiKeyData.user_id,
+            is_online: true,
+            connection_status: 'connected'
           })
           .select()
           .single()
@@ -179,17 +184,26 @@ serve(async (req) => {
         })
       }
 
-      // Validate API key
+      // Validate API key - updated to match esp32-data function
       const { data: apiKeyData, error: apiKeyError } = await supabaseClient
         .from('api_keys')
-        .select('user_id')
-        .eq('key', apiKey)
+        .select('user_id, device_id, is_active')
+        .eq('key_hash', apiKey)
+        .eq('is_active', true)
         .single()
 
       if (apiKeyError || !apiKeyData) {
-        return new Response(JSON.stringify({ error: 'Invalid API key' }), {
+        return new Response(JSON.stringify({ error: 'Invalid or inactive API key' }), {
           headers: { ...corsHeaders, 'Content-Type': 'application/json' },
           status: 401,
+        })
+      }
+
+      // Verify the API key belongs to the device (if device_id is specified in api_keys)
+      if (apiKeyData.device_id && apiKeyData.device_id !== device_id) {
+        return new Response(JSON.stringify({ error: 'API key not authorized for this device' }), {
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+          status: 403,
         })
       }
 
@@ -198,7 +212,9 @@ serve(async (req) => {
         .from('devices')
         .update({
           status,
-          last_seen: new Date().toISOString()
+          last_seen: new Date().toISOString(),
+          is_online: status === 'online',
+          connection_status: status === 'online' ? 'connected' : 'disconnected'
         })
         .eq('device_id', device_id)
         .eq('user_id', apiKeyData.user_id)
