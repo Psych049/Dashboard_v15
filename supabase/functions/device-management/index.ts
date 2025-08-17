@@ -34,27 +34,31 @@ serve(async (req) => {
       const { 
         device_id, 
         name, 
-        device_type = 'esp32', 
+        device_name,
+        device_type = 'ESP32_DevKitV1', 
         ip_address, 
         mac_address, 
         firmware_version,
-        apiKey 
+        apiKey,
+        api_key 
       } = await req.json()
       
-      if (!device_id || !name || !apiKey) {
+      const providedApiKey = apiKey || api_key
+      
+      if (!device_id || !(name || device_name) || !providedApiKey) {
         return new Response(JSON.stringify({ 
-          error: 'Missing required fields: device_id, name, apiKey' 
+          error: 'Missing required fields: device_id, name/device_name, apiKey' 
         }), {
           headers: { ...corsHeaders, 'Content-Type': 'application/json' },
           status: 400,
         })
       }
 
-      // Validate API key
+      // Validate API key (hashed key expected in DB)
       const { data: apiKeyData, error: apiKeyError } = await supabaseClient
         .from('api_keys')
         .select('user_id')
-        .eq('key', apiKey)
+        .eq('key_hash', providedApiKey)
         .single()
 
       if (apiKeyError || !apiKeyData) {
@@ -64,11 +68,11 @@ serve(async (req) => {
         })
       }
 
-      // Check if device already exists
-      const { data: existingDevice, error: existingError } = await supabaseClient
+      // Check if device already exists by id (UUID)
+      const { data: existingDevice } = await supabaseClient
         .from('devices')
         .select('*')
-        .eq('device_id', device_id)
+        .eq('id', device_id)
         .eq('user_id', apiKeyData.user_id)
         .single()
 
@@ -77,10 +81,11 @@ serve(async (req) => {
         const { data: device, error: updateError } = await supabaseClient
           .from('devices')
           .update({
-            name,
-            status: 'online',
+            device_name: device_name || name,
+            is_online: true,
+            connection_status: 'connected',
             last_seen: new Date().toISOString(),
-            ip_address,
+            last_heartbeat: new Date().toISOString(),
             mac_address,
             firmware_version
           })
@@ -107,14 +112,16 @@ serve(async (req) => {
         const { data: device, error: insertError } = await supabaseClient
           .from('devices')
           .insert({
-            device_id,
-            name,
+            id: device_id,
+            user_id: apiKeyData.user_id,
+            device_name: device_name || name,
             device_type,
-            status: 'online',
-            ip_address,
+            is_online: true,
+            connection_status: 'connected',
             mac_address,
             firmware_version,
-            user_id: apiKeyData.user_id
+            last_seen: new Date().toISOString(),
+            last_heartbeat: new Date().toISOString()
           })
           .select()
           .single()
@@ -168,9 +175,11 @@ serve(async (req) => {
 
     } else if (method === 'PUT') {
       // Update device status (heartbeat from ESP32)
-      const { device_id, status = 'online', apiKey } = await req.json()
+      const { device_id, status = 'connected', is_online = true, firmware_version, apiKey, api_key } = await req.json()
       
-      if (!device_id || !apiKey) {
+      const providedApiKey = apiKey || api_key
+      
+      if (!device_id || !providedApiKey) {
         return new Response(JSON.stringify({ 
           error: 'Missing required fields: device_id, apiKey' 
         }), {
@@ -183,7 +192,7 @@ serve(async (req) => {
       const { data: apiKeyData, error: apiKeyError } = await supabaseClient
         .from('api_keys')
         .select('user_id')
-        .eq('key', apiKey)
+        .eq('key_hash', providedApiKey)
         .single()
 
       if (apiKeyError || !apiKeyData) {
@@ -197,10 +206,13 @@ serve(async (req) => {
       const { data: device, error: updateError } = await supabaseClient
         .from('devices')
         .update({
-          status,
-          last_seen: new Date().toISOString()
+          is_online,
+          connection_status: status,
+          firmware_version,
+          last_seen: new Date().toISOString(),
+          last_heartbeat: new Date().toISOString()
         })
-        .eq('device_id', device_id)
+        .eq('id', device_id)
         .eq('user_id', apiKeyData.user_id)
         .select()
         .single()
