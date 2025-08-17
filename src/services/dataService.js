@@ -60,16 +60,44 @@ export class DataService {
       const { data: { user } } = await supabase.auth.getUser();
       if (!user) throw new Error('User not authenticated');
 
-      const { data, error } = await supabase
+      // Try modern schema first (alerts with created_at, is_read)
+      let query = supabase
         .from('alerts')
         .select('*')
         .eq('user_id', user.id)
-        .eq('is_read', false)
         .order('created_at', { ascending: false })
         .limit(10);
 
+      let { data, error } = await query;
+
+      // If column mismatch, fall back to legacy columns (timestamp, read)
+      if (error && (error.message?.includes('column') || error.code === 'PGRST204')) {
+        const { data: legacyData, error: legacyError } = await supabase
+          .from('alerts')
+          .select('*')
+          .eq('user_id', user.id)
+          .order('timestamp', { ascending: false })
+          .limit(10);
+        if (legacyError) throw legacyError;
+
+        // Normalize to common shape
+        return (legacyData || []).map(a => ({
+          ...a,
+          is_read: a.is_read ?? a.read ?? false,
+          created_at: a.created_at ?? a.timestamp,
+        }));
+      }
+
       if (error) throw error;
-      return data || [];
+
+      // Normalize
+      return (data || [])
+        .map(a => ({
+          ...a,
+          is_read: a.is_read ?? a.read ?? false,
+          created_at: a.created_at ?? a.timestamp,
+        }))
+        .filter(a => a.is_read === false);
     } catch (error) {
       console.error('Error fetching alerts:', error);
       return [];
