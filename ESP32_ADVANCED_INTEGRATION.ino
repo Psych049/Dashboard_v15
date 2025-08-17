@@ -297,6 +297,7 @@ bool sendSensorReading(String sensorType, float value, String unit) {
   doc["value"] = value;
   doc["unit"] = unit;
   doc["apiKey"] = apiKey;
+  doc["api_key"] = apiKey; // compatibility with DB function parameter naming
   doc["battery_level"] = batteryLevel;
   doc["signal_strength"] = signalStrength;
   
@@ -381,7 +382,7 @@ void checkForCommands() {
   if (!isOnline) return;
   
   HTTPClient http;
-  String url = String(commandsUrl) + "?device_id=" + deviceId + "&apiKey=" + apiKey;
+  String url = String(commandsUrl) + "?device_id=" + deviceId + "&apiKey=" + apiKey + "&api_key=" + apiKey;
   http.begin(url);
   
   int httpResponseCode = http.GET();
@@ -403,29 +404,47 @@ void checkForCommands() {
 }
 
 void executeCommand(JsonObject command) {
-  String commandType = command["command_type"];
-  String commandId = command["id"];
+  String commandType = command["command_type"].as<String>();
+  String commandId = command["id"].as<String>();
+  
+  // Normalize command type to lower-case to match DB convention
+  commandType.toLowerCase();
   
   Serial.print("Executing command: ");
   Serial.println(commandType);
   
   bool success = false;
   
-  if (commandType == "PUMP_ON") {
+  if (commandType == "pump_on" || commandType == "water") {
     digitalWrite(pumpPin, HIGH);
     success = true;
-  } else if (commandType == "PUMP_OFF") {
+  } else if (commandType == "pump_off") {
     digitalWrite(pumpPin, LOW);
     success = true;
-  } else if (commandType == "PUMP_DURATION") {
-    int duration = command["parameters"]["duration"] | 5000; // Default 5 seconds
-    triggerIrrigation(duration);
+  } else if (commandType == "pump_duration" || commandType == "water_for") {
+    // Interpret duration in seconds if provided, else default 5s
+    int durationSeconds = command["parameters"]["duration"] | 5;
+    int durationMs = durationSeconds * 1000;
+    triggerIrrigation(durationMs);
+    success = true;
+  } else if (commandType == "read_sensors") {
+    sendSensorData();
+    success = true;
+  } else if (commandType == "restart") {
+    Serial.println("Restarting device as requested...");
+    success = true;
+    reportCommandExecution(commandId, "executing");
+    delay(250);
+    ESP.restart();
+  } else if (commandType == "update_firmware") {
+    Serial.println("Checking for OTA update...");
+    checkForUpdates();
     success = true;
   }
   
-  // Report command execution
+  // Report command execution using schema-aligned statuses
   if (success) {
-    reportCommandExecution(commandId, "executed");
+    reportCommandExecution(commandId, "completed");
   } else {
     reportCommandExecution(commandId, "failed");
   }
@@ -480,12 +499,14 @@ void registerDevice() {
   
   DynamicJsonDocument doc(512);
   doc["device_id"] = deviceId;
-  doc["name"] = deviceName;
-  doc["device_type"] = "esp32";
-  doc["ip_address"] = WiFi.localIP().toString();
+  doc["device_name"] = deviceName; // align with devices.device_name
+  doc["device_type"] = "ESP32_DevKitV1";
   doc["mac_address"] = WiFi.macAddress();
   doc["firmware_version"] = firmwareVersion;
+  doc["connection_status"] = "connected";
+  doc["is_online"] = true;
   doc["apiKey"] = apiKey;
+  doc["api_key"] = apiKey; // compatibility with DB function parameter naming
   
   String jsonString;
   serializeJson(doc, jsonString);
@@ -510,8 +531,11 @@ void sendHeartbeat() {
   
   DynamicJsonDocument doc(256);
   doc["device_id"] = deviceId;
-  doc["status"] = "online";
+  doc["is_online"] = true;               // align with update_device_status()
+  doc["connection_status"] = "connected"; // optional mapping
+  doc["firmware_version"] = firmwareVersion;
   doc["apiKey"] = apiKey;
+  doc["api_key"] = apiKey; // compatibility with DB function parameter naming
   
   String jsonString;
   serializeJson(doc, jsonString);
