@@ -23,9 +23,9 @@ const MoistureHumidityChart = () => {
       
       // Transform data for chart with validation
       const chartData = sensorData
-        .filter(item => item && item.timestamp) // Filter out invalid data
+        .filter(item => item && item.time) // Filter out invalid data
         .map(item => ({
-          time: new Date(item.timestamp).toLocaleTimeString('en-US', { 
+          time: new Date(item.time).toLocaleTimeString('en-US', { 
             hour: '2-digit', 
             minute: '2-digit',
             hour12: false 

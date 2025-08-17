@@ -872,10 +872,10 @@ export default function SystemPage() {
                         <div className="bg-gray-50 dark:bg-gray-900 rounded-md p-3 text-sm font-mono overflow-x-auto">
                           <div className="text-blue-600 dark:text-blue-400">const char* supabaseUrl = "https://gqzaxkczxcudxbbkudmm.supabase.co";</div>
                           <div className="text-purple-600 dark:text-purple-400">const char* supabaseAnonKey = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImdxemF4a2N6eGN1ZHhiYmt1ZG1tIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTM3MzcwNzEsImV4cCI6MjA2OTMxMzA3MX0.RR4jib8iRkZG1rqFpH3wuTE82BY5ViJKFR0FVvu5N4U";</div>
-                          <div className="text-green-600 dark:text-green-400">const char* apiKey = "{apiKey.key}";</div>
+                          <div className="text-green-600 dark:text-green-400">const char* apiKey = "{apiKey.display_key}";</div>
                         </div>
                         <button
-                          onClick={() => copyToClipboard(`const char* supabaseUrl = "https://gqzaxkczxcudxbbkudmm.supabase.co";\nconst char* supabaseAnonKey = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImdxemF4a2N6eGN1ZHhiYmt1ZG1tIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTM3MzcwNzEsImV4cCI6MjA2OTMxMzA3MX0.RR4jib8iRkZG1rqFpH3wuTE82BY5ViJKFR0FVvu5N4U";\nconst char* apiKey = "${apiKey.key}";`)}
+                          onClick={() => copyToClipboard(`const char* supabaseUrl = "https://gqzaxkczxcudxbbkudmm.supabase.co";\nconst char* supabaseAnonKey = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImdxemF4a2N6eGN1ZHhiYmt1ZG1tIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTM3MzcwNzEsImV4cCI6MjA2OTMxMzA3MX0.RR4jib8iRkZG1rqFpH3wuTE82BY5ViJKFR0FVvu5N4U";\nconst char* apiKey = "${apiKey.display_key}";`)}
                           className="mt-2 px-2 py-1 bg-gray-600 text-white rounded text-xs hover:bg-gray-700 transition"
                           aria-label="Copy Supabase configuration"
                         >
